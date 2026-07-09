@@ -1,0 +1,197 @@
+@import "tailwindcss";
+
+/* ============================================================
+   Dabble Meta Dashboard — design tokens
+   Dark-first, executive theme. Light mode is a one-block swap
+   via [data-theme="light"] (toggle can be wired later).
+   ============================================================ */
+
+:root {
+  color-scheme: dark;
+
+  /* Planes & surfaces */
+  --plane: #090c14;          /* page background (darkest) */
+  --plane-2: #0c1019;        /* secondary plane (sidebar) */
+  --surface: #111726;        /* card surface */
+  --surface-2: #161d2e;      /* elevated / hover */
+  --surface-glass: rgba(17, 23, 38, 0.62);
+
+  /* Hairlines & borders */
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-strong: rgba(255, 255, 255, 0.14);
+
+  /* Ink (text) */
+  --ink: #f1f5f9;
+  --ink-secondary: #97a3b6;
+  --ink-muted: #63718a;
+
+  /* Accent (indigo → violet) */
+  --accent: #6366f1;
+  --accent-2: #8b5cf6;
+  --accent-ink: #c7d0ff;
+  --accent-soft: rgba(99, 102, 241, 0.16);
+
+  /* Semantic */
+  --positive: #10b981;
+  --positive-soft: rgba(16, 185, 129, 0.15);
+  --negative: #f43f5e;
+  --negative-soft: rgba(244, 63, 94, 0.15);
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.15);
+
+  /* Chart series (validated colorblind-safe hues, dark surface) */
+  --series-1: #3987e5;   /* blue   — spend */
+  --series-2: #199e70;   /* aqua   — revenue */
+  --series-3: #9085e9;   /* violet — roas */
+  --series-4: #c98500;   /* yellow */
+  --series-5: #e66767;   /* red */
+  --series-6: #d55181;   /* magenta */
+
+  /* Funnel ramp — single hue (blue), ordinal, monotone L, validated on the
+     dark surface (surface #111726): light end #cde2fb clears 2:1 minimum. */
+  --funnel-1: #cde2fb;
+  --funnel-2: #9ec5f4;
+  --funnel-3: #6da7ec;
+  --funnel-4: #3987e5;
+  --funnel-5: #256abf;
+  --funnel-6: #184f95;
+
+  /* Radii & shadow */
+  --radius: 16px;
+  --radius-sm: 10px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --plane: #f5f6f8;
+  --plane-2: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-glass: rgba(255, 255, 255, 0.72);
+
+  --hairline: rgba(15, 23, 42, 0.09);
+  --hairline-strong: rgba(15, 23, 42, 0.16);
+
+  --ink: #0f172a;
+  --ink-secondary: #475569;
+  --ink-muted: #94a3b8;
+
+  --accent: #6366f1;
+  --accent-2: #7c3aed;
+  --accent-ink: #4338ca;
+  --accent-soft: rgba(99, 102, 241, 0.12);
+
+  --positive: #059669;
+  --positive-soft: rgba(5, 150, 105, 0.12);
+  --negative: #e11d48;
+  --negative-soft: rgba(225, 29, 72, 0.1);
+  --warning: #d97706;
+  --warning-soft: rgba(217, 119, 6, 0.12);
+
+  --series-1: #2a78d6;
+  --series-2: #1baf7a;
+  --series-3: #4a3aa7;
+  --series-4: #eda100;
+  --series-5: #e34948;
+  --series-6: #e87ba4;
+
+  /* Funnel ramp — validated on the light surface (#fcfcfb): light end
+     #86b6ef clears 2:1 minimum; darkest step extends the same hue/chroma. */
+  --funnel-1: #86b6ef;
+  --funnel-2: #5598e7;
+  --funnel-3: #2a78d6;
+  --funnel-4: #1c5cab;
+  --funnel-5: #104281;
+  --funnel-6: #0a2c58;
+
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+/* Expose tokens to Tailwind v4 utilities (bg-surface, text-ink, border-hairline, …) */
+@theme inline {
+  --color-plane: var(--plane);
+  --color-plane-2: var(--plane-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+
+  --color-ink: var(--ink);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-muted: var(--ink-muted);
+
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-ink: var(--accent-ink);
+
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--warning);
+
+  --radius-card: var(--radius);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--plane);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Reusable primitives ---------------------------------- */
+
+/* Frosted card surface */
+.glass {
+  background: var(--surface-glass);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--hairline);
+}
+
+/* Tabular figures for aligned numeric columns */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Accent gradient text */
+.text-gradient {
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Thin, themed scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--hairline-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in {
+  animation: fade-in-up 0.35s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in { animation: none; }
+}
