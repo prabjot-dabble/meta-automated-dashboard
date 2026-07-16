@@ -41,6 +41,24 @@ export const PURCHASE_ACTION_TYPE_PRIORITY = [
     "offsite_conversion.fb_pixel_purchase",
 ] as const;
 
+/* Mid-funnel events follow the same one-canonical-type-by-priority rule. */
+export const LANDING_PAGE_VIEW_PRIORITY = [
+    "landing_page_view",
+    "omni_landing_page_view",
+] as const;
+
+export const ADD_TO_CART_PRIORITY = [
+    "omni_add_to_cart",
+    "add_to_cart",
+    "offsite_conversion.fb_pixel_add_to_cart",
+] as const;
+
+export const INITIATE_CHECKOUT_PRIORITY = [
+    "omni_initiated_checkout",
+    "initiate_checkout",
+    "offsite_conversion.fb_pixel_initiate_checkout",
+] as const;
+
 /**
  * Returns the numeric `value` of the first action whose `action_type` matches
  * the priority list — matched by priority order, NOT by array position — or 0
@@ -127,6 +145,11 @@ export function deriveCostPerPurchase(spend: number, purchases: number): number 
     return safeDivide(spend, purchases);
 }
 
+/** Clicks → LPV rate as a percentage: landing page views / clicks * 100. */
+export function deriveClicksToLpv(landingViews: number, clicks: number): number {
+    return safeDivide(landingViews, clicks) * 100;
+}
+
 /* ────────────────────────────────────────────────────────────────────────
  * Campaign-level aggregation
  * ──────────────────────────────────────────────────────────────────────── */
@@ -142,6 +165,9 @@ export interface CampaignAggregate {
     impressions: number;
     clicks: number;
     reach: number;
+    landingViews: number;
+    addToCart: number;
+    checkoutInitiated: number;
 
     // Derived (from the summed totals above)
     roas: number;
@@ -149,6 +175,7 @@ export interface CampaignAggregate {
     cpc: number;
     cpm: number;
     costPerPurchase: number;
+    clicksToLpv: number;
 
     /** Number of distinct campaign-days aggregated into this campaign. */
     days: number;
@@ -183,11 +210,15 @@ export function aggregateByCampaign(rows: MetaCampaign[]): CampaignAggregate[] {
                 impressions: 0,
                 clicks: 0,
                 reach: 0,
+                landingViews: 0,
+                addToCart: 0,
+                checkoutInitiated: 0,
                 roas: 0,
                 ctr: 0,
                 cpc: 0,
                 cpm: 0,
                 costPerPurchase: 0,
+                clicksToLpv: 0,
                 days: 0,
             };
             byId.set(id, agg);
@@ -199,6 +230,9 @@ export function aggregateByCampaign(rows: MetaCampaign[]): CampaignAggregate[] {
         agg.impressions += toNumber(row.impressions);
         agg.clicks += toNumber(row.clicks);
         agg.reach += toNumber(row.reach);
+        agg.landingViews += pickCanonicalValue(row.actions, LANDING_PAGE_VIEW_PRIORITY);
+        agg.addToCart += pickCanonicalValue(row.actions, ADD_TO_CART_PRIORITY);
+        agg.checkoutInitiated += pickCanonicalValue(row.actions, INITIATE_CHECKOUT_PRIORITY);
         agg.days += 1;
 
         // Keep the most recent non-empty name we see.
@@ -213,6 +247,7 @@ export function aggregateByCampaign(rows: MetaCampaign[]): CampaignAggregate[] {
         agg.cpc = deriveCpc(agg.spend, agg.clicks);
         agg.cpm = deriveCpm(agg.spend, agg.impressions);
         agg.costPerPurchase = deriveCostPerPurchase(agg.spend, agg.purchases);
+        agg.clicksToLpv = deriveClicksToLpv(agg.landingViews, agg.clicks);
     }
 
     result.sort((a, b) => b.spend - a.spend);
@@ -249,12 +284,16 @@ export interface AccountTotals {
     impressions: number;
     clicks: number;
     reach: number;
+    landingViews: number;
+    addToCart: number;
+    checkoutInitiated: number;
 
     roas: number;
     ctr: number;
     cpc: number;
     cpm: number;
     costPerPurchase: number;
+    clicksToLpv: number;
 
     /** Count of DISTINCT campaigns (by campaign_id), not campaign-day rows. */
     campaignCount: number;
@@ -273,11 +312,15 @@ export function computeTotals(rows: MetaCampaign[]): AccountTotals {
         impressions: 0,
         clicks: 0,
         reach: 0,
+        landingViews: 0,
+        addToCart: 0,
+        checkoutInitiated: 0,
         roas: 0,
         ctr: 0,
         cpc: 0,
         cpm: 0,
         costPerPurchase: 0,
+        clicksToLpv: 0,
         campaignCount: 0,
     };
 
@@ -290,6 +333,9 @@ export function computeTotals(rows: MetaCampaign[]): AccountTotals {
         totals.impressions += toNumber(row.impressions);
         totals.clicks += toNumber(row.clicks);
         totals.reach += toNumber(row.reach);
+        totals.landingViews += pickCanonicalValue(row.actions, LANDING_PAGE_VIEW_PRIORITY);
+        totals.addToCart += pickCanonicalValue(row.actions, ADD_TO_CART_PRIORITY);
+        totals.checkoutInitiated += pickCanonicalValue(row.actions, INITIATE_CHECKOUT_PRIORITY);
         if (row.campaign_id) ids.add(row.campaign_id);
     }
 
@@ -298,6 +344,7 @@ export function computeTotals(rows: MetaCampaign[]): AccountTotals {
     totals.cpc = deriveCpc(totals.spend, totals.clicks);
     totals.cpm = deriveCpm(totals.spend, totals.impressions);
     totals.costPerPurchase = deriveCostPerPurchase(totals.spend, totals.purchases);
+    totals.clicksToLpv = deriveClicksToLpv(totals.landingViews, totals.clicks);
     totals.campaignCount = ids.size;
 
     return totals;
@@ -316,11 +363,15 @@ export function sumAggregates(aggregates: CampaignAggregate[]): AccountTotals {
         impressions: 0,
         clicks: 0,
         reach: 0,
+        landingViews: 0,
+        addToCart: 0,
+        checkoutInitiated: 0,
         roas: 0,
         ctr: 0,
         cpc: 0,
         cpm: 0,
         costPerPurchase: 0,
+        clicksToLpv: 0,
         campaignCount: aggregates.length,
     };
 
@@ -331,6 +382,9 @@ export function sumAggregates(aggregates: CampaignAggregate[]): AccountTotals {
         totals.impressions += a.impressions;
         totals.clicks += a.clicks;
         totals.reach += a.reach;
+        totals.landingViews += a.landingViews;
+        totals.addToCart += a.addToCart;
+        totals.checkoutInitiated += a.checkoutInitiated;
     }
 
     totals.roas = deriveRoas(totals.revenue, totals.spend);
@@ -338,6 +392,7 @@ export function sumAggregates(aggregates: CampaignAggregate[]): AccountTotals {
     totals.cpc = deriveCpc(totals.spend, totals.clicks);
     totals.cpm = deriveCpm(totals.spend, totals.impressions);
     totals.costPerPurchase = deriveCostPerPurchase(totals.spend, totals.purchases);
+    totals.clicksToLpv = deriveClicksToLpv(totals.landingViews, totals.clicks);
 
     return totals;
 }
@@ -484,23 +539,6 @@ export function getFocusAreas(
  * Each mid-funnel stage picks ONE canonical action type by priority, same
  * pattern as purchases, so overlapping event types are never double-counted.
  * ──────────────────────────────────────────────────────────────────────── */
-
-const LANDING_PAGE_VIEW_PRIORITY = [
-    "landing_page_view",
-    "omni_landing_page_view",
-] as const;
-
-const ADD_TO_CART_PRIORITY = [
-    "omni_add_to_cart",
-    "add_to_cart",
-    "offsite_conversion.fb_pixel_add_to_cart",
-] as const;
-
-const INITIATE_CHECKOUT_PRIORITY = [
-    "omni_initiated_checkout",
-    "initiate_checkout",
-    "offsite_conversion.fb_pixel_initiate_checkout",
-] as const;
 
 export interface FunnelStage {
     key: "impressions" | "clicks" | "landingViews" | "addToCart" | "checkout" | "purchases";

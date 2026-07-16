@@ -55,9 +55,16 @@ export const columns: ColumnDef<CampaignAggregate>[] = [
     {
         id: "spend",
         accessorFn: (row) => row.spend,
-        header: "Spend",
-        meta: { align: "right", label: "Spend" },
+        header: "Cost",
+        meta: { align: "right", label: "Cost" },
         cell: ({ getValue }) => formatCurrency(getValue<number>()),
+    },
+    {
+        id: "purchases",
+        accessorFn: (row) => row.purchases,
+        header: "Purchases",
+        meta: { align: "right", label: "Purchases" },
+        cell: ({ getValue }) => formatNumber(getValue<number>()),
     },
     {
         id: "revenue",
@@ -74,20 +81,6 @@ export const columns: ColumnDef<CampaignAggregate>[] = [
         cell: ({ getValue }) => <RoasBadge value={getValue<number>()} />,
     },
     {
-        id: "purchases",
-        accessorFn: (row) => row.purchases,
-        header: "Purchases",
-        meta: { align: "right", label: "Purchases" },
-        cell: ({ getValue }) => formatNumber(getValue<number>()),
-    },
-    {
-        id: "costPerPurchase",
-        accessorFn: (row) => row.costPerPurchase,
-        header: "Cost / Purch.",
-        meta: { align: "right", label: "Cost / Purchase" },
-        cell: ({ getValue }) => formatCurrency(getValue<number>()),
-    },
-    {
         id: "impressions",
         accessorFn: (row) => row.impressions,
         header: "Impressions",
@@ -102,11 +95,46 @@ export const columns: ColumnDef<CampaignAggregate>[] = [
         cell: ({ getValue }) => formatNumber(getValue<number>()),
     },
     {
+        id: "landingViews",
+        accessorFn: (row) => row.landingViews,
+        header: "LPV",
+        meta: { align: "right", label: "Landing Page Views" },
+        cell: ({ getValue }) => formatNumber(getValue<number>()),
+    },
+    {
+        id: "addToCart",
+        accessorFn: (row) => row.addToCart,
+        header: "ATC",
+        meta: { align: "right", label: "Add to Cart" },
+        cell: ({ getValue }) => formatNumber(getValue<number>()),
+    },
+    {
+        id: "checkoutInitiated",
+        accessorFn: (row) => row.checkoutInitiated,
+        header: "CI",
+        meta: { align: "right", label: "Checkout Initiated" },
+        cell: ({ getValue }) => formatNumber(getValue<number>()),
+    },
+    {
         id: "ctr",
         accessorFn: (row) => row.ctr,
         header: "CTR",
         meta: { align: "right", label: "CTR" },
         cell: ({ getValue }) => formatPercent(getValue<number>()),
+    },
+    {
+        id: "clicksToLpv",
+        accessorFn: (row) => row.clicksToLpv,
+        header: "Clicks → LPV",
+        meta: { align: "right", label: "Clicks → LPV" },
+        cell: ({ getValue }) => formatPercent(getValue<number>()),
+    },
+    {
+        id: "costPerPurchase",
+        accessorFn: (row) => row.costPerPurchase,
+        header: "Cost / Purch.",
+        meta: { align: "right", label: "Cost / Purchase" },
+        cell: ({ getValue }) => formatCurrency(getValue<number>()),
     },
     {
         id: "cpc",
@@ -126,8 +154,7 @@ export const columns: ColumnDef<CampaignAggregate>[] = [
 
 /** Columns hidden by default (toggleable via the column menu). */
 export const DEFAULT_HIDDEN_COLUMNS: Record<string, boolean> = {
-    impressions: false,
-    clicks: false,
+    costPerPurchase: false,
     cpc: false,
     cpm: false,
 };

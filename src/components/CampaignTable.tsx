@@ -86,8 +86,16 @@ export default function CampaignTable({ campaigns }: Props) {
                 return formatNumber(totals.impressions);
             case "clicks":
                 return formatNumber(totals.clicks);
+            case "landingViews":
+                return formatNumber(totals.landingViews);
+            case "addToCart":
+                return formatNumber(totals.addToCart);
+            case "checkoutInitiated":
+                return formatNumber(totals.checkoutInitiated);
             case "ctr":
                 return formatPercent(totals.ctr);
+            case "clicksToLpv":
+                return formatPercent(totals.clicksToLpv);
             case "cpc":
                 return formatCurrency(totals.cpc);
             case "cpm":
