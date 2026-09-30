@@ -19,7 +19,7 @@
  * surfaces reconcile with one another and with Meta Ads Manager.
  */
 
-import { MetaAction, MetaCampaign } from "@/types/meta";
+import { MetaAction, MetaAdRow, MetaCampaign } from "@/types/meta";
 
 /* ────────────────────────────────────────────────────────────────────────
  * Canonical purchase configuration
@@ -58,6 +58,29 @@ export const INITIATE_CHECKOUT_PRIORITY = [
     "initiate_checkout",
     "offsite_conversion.fb_pixel_initiate_checkout",
 ] as const;
+
+/**
+ * 3-second video plays. Meta reports them as the `video_view` action; this is
+ * the numerator of hook rate. (ThruPlays arrive in their own field, see
+ * `getThruPlays`, and use the same `video_view` label.)
+ */
+export const VIDEO_VIEW_3S_PRIORITY = ["video_view"] as const;
+
+/**
+ * Every action type any metric above reads. The API routes keep ONLY these on
+ * each row (Meta returns ~60 types per row; the rest are dead weight in the
+ * cache and the browser payload). When you add a metric that reads a new action
+ * type, put its priority list here so it survives the trim.
+ */
+export const TRACKED_ACTION_TYPES: readonly string[] = Array.from(
+    new Set<string>([
+        ...PURCHASE_ACTION_TYPE_PRIORITY,
+        ...LANDING_PAGE_VIEW_PRIORITY,
+        ...ADD_TO_CART_PRIORITY,
+        ...INITIATE_CHECKOUT_PRIORITY,
+        ...VIDEO_VIEW_3S_PRIORITY,
+    ])
+);
 
 /**
  * Returns the numeric `value` of the first action whose `action_type` matches
@@ -122,6 +145,37 @@ export function getRowRoas(campaign: MetaCampaign): number {
 /* ────────────────────────────────────────────────────────────────────────
  * Derived ratios (from summed totals)
  * ──────────────────────────────────────────────────────────────────────── */
+
+/** 3-second video plays for a row (from `actions`). */
+export function getVideoViews3s(row: MetaCampaign): number {
+    return pickCanonicalValue(row.actions, VIDEO_VIEW_3S_PRIORITY);
+}
+
+/** ThruPlays (watched to 15s or to the end, whichever comes first). */
+export function getThruPlays(row: MetaCampaign): number {
+    return pickCanonicalValue(row.video_thruplay_watched_actions, VIDEO_VIEW_3S_PRIORITY);
+}
+
+/** Average seconds watched per video play. */
+export function getAvgWatchSeconds(row: MetaCampaign): number {
+    return pickCanonicalValue(row.video_avg_time_watched_actions, VIDEO_VIEW_3S_PRIORITY);
+}
+
+/**
+ * Hook rate: share of impressions that watched at least 3 seconds (percent).
+ * Says whether the opening of a video stops the scroll.
+ */
+export function deriveHookRate(views3s: number, impressions: number): number {
+    return safeDivide(views3s, impressions) * 100;
+}
+
+/**
+ * Hold rate: of the people who got past the hook, the share that watched to 15s
+ * or the end (percent). Says whether the video keeps attention once it has it.
+ */
+export function deriveHoldRate(thruPlays: number, views3s: number): number {
+    return safeDivide(thruPlays, views3s) * 100;
+}
 
 export function deriveRoas(revenue: number, spend: number): number {
     return safeDivide(revenue, spend);
@@ -398,6 +452,132 @@ export function sumAggregates(aggregates: CampaignAggregate[]): AccountTotals {
 }
 
 /* ────────────────────────────────────────────────────────────────────────
+ * Weekly creative-type breakdown
+ *
+ * Operates on AD-WEEK rows (`level=ad`, `time_increment=7` — one row per ad
+ * per 7-day bucket, buckets aligned to the query's `since`). Each ad is
+ * classified Inhouse/Parent by the caller-supplied classifier (see
+ * @/lib/creativeTypes), additive metrics are summed per (week × class), and
+ * ratios are derived from those sums — the same SUM-then-DERIVE rule as
+ * everything else in this file. The Total bucket is summed independently from
+ * ALL rows, so it stays correct even if the classifier changes.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** Summed + derived metrics for one creative class within one week. */
+export interface CreativeBucket {
+    spend: number;
+    revenue: number;
+    purchases: number;
+    impressions: number;
+    clicks: number;
+    landingViews: number;
+    addToCart: number;
+    checkoutInitiated: number;
+
+    roas: number;
+    ctr: number;
+    clicksToLpv: number;
+}
+
+export interface WeekBreakdown {
+    /** Bucket bounds (YYYY-MM-DD, inclusive). */
+    since: string;
+    until: string;
+    /** Display label, e.g. "10 Jun – 16 Jun". */
+    label: string;
+    inhouse: CreativeBucket;
+    parent: CreativeBucket;
+    total: CreativeBucket;
+}
+
+function emptyBucket(): CreativeBucket {
+    return {
+        spend: 0,
+        revenue: 0,
+        purchases: 0,
+        impressions: 0,
+        clicks: 0,
+        landingViews: 0,
+        addToCart: 0,
+        checkoutInitiated: 0,
+        roas: 0,
+        ctr: 0,
+        clicksToLpv: 0,
+    };
+}
+
+function addRowToBucket(bucket: CreativeBucket, row: MetaAdRow): void {
+    bucket.spend += toNumber(row.spend);
+    bucket.revenue += getRevenue(row);
+    bucket.purchases += getPurchases(row);
+    bucket.impressions += toNumber(row.impressions);
+    bucket.clicks += toNumber(row.clicks);
+    bucket.landingViews += pickCanonicalValue(row.actions, LANDING_PAGE_VIEW_PRIORITY);
+    bucket.addToCart += pickCanonicalValue(row.actions, ADD_TO_CART_PRIORITY);
+    bucket.checkoutInitiated += pickCanonicalValue(
+        row.actions,
+        INITIATE_CHECKOUT_PRIORITY
+    );
+}
+
+function deriveBucket(bucket: CreativeBucket): void {
+    bucket.roas = deriveRoas(bucket.revenue, bucket.spend);
+    bucket.ctr = deriveCtr(bucket.clicks, bucket.impressions);
+    bucket.clicksToLpv = deriveClicksToLpv(bucket.landingViews, bucket.clicks);
+}
+
+/** Short local date label, e.g. "10 Jun". Parses YMD as a LOCAL date. */
+function shortDayMonth(ymd: string): string {
+    const [y, m, d] = ymd.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(LOCALE, {
+        day: "numeric",
+        month: "short",
+    });
+}
+
+/**
+ * Groups ad-week rows into weeks (keyed by the bucket's `date_start`), splits
+ * each week by creative class, and derives ratios. Weeks are returned in
+ * chronological order.
+ */
+export function aggregateWeeklyByCreative(
+    rows: MetaAdRow[],
+    classify: (adName: string | undefined) => "inhouse" | "parent"
+): WeekBreakdown[] {
+    const byWeek = new Map<string, WeekBreakdown>();
+
+    for (const row of rows) {
+        const key = row.date_start;
+        let week = byWeek.get(key);
+
+        if (!week) {
+            week = {
+                since: row.date_start,
+                until: row.date_stop,
+                label: `${shortDayMonth(row.date_start)} – ${shortDayMonth(row.date_stop)}`,
+                inhouse: emptyBucket(),
+                parent: emptyBucket(),
+                total: emptyBucket(),
+            };
+            byWeek.set(key, week);
+        }
+
+        addRowToBucket(week[classify(row.ad_name)], row);
+        addRowToBucket(week.total, row);
+    }
+
+    const result = Array.from(byWeek.values());
+    for (const week of result) {
+        deriveBucket(week.inhouse);
+        deriveBucket(week.parent);
+        deriveBucket(week.total);
+    }
+
+    result.sort((a, b) => a.since.localeCompare(b.since));
+    return result;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
  * Daily time series (charts)
  * ──────────────────────────────────────────────────────────────────────── */
 
@@ -452,6 +632,14 @@ export function formatCurrency(value: number, fractionDigits = 2): string {
     return `₹${toNumber(value).toLocaleString(LOCALE, {
         minimumFractionDigits: fractionDigits,
         maximumFractionDigits: fractionDigits,
+    })}`;
+}
+
+/** Compact ₹ in Indian notation, e.g. ₹2.76L, ₹1.2Cr (week-wise summaries). */
+export function formatCompactINR(value: number): string {
+    return `₹${toNumber(value).toLocaleString(LOCALE, {
+        notation: "compact",
+        maximumFractionDigits: 2,
     })}`;
 }
 

@@ -21,11 +21,15 @@ import RoasTrendChart from "@/components/charts/RoasTrendChart";
 import SpendDistribution from "@/components/charts/SpendDistribution";
 import RevenueDistribution from "@/components/charts/RevenueDistribution";
 import FunnelChart from "@/components/charts/FunnelChart";
-import KPICard from "@/components/KPICard";
+import KPICard, { KpiDelta, pctChange } from "@/components/KPICard";
 import CampaignTable from "@/components/CampaignTable";
+import WeeklyPerformance from "@/components/WeeklyPerformance";
+import CreativeInsights from "@/components/CreativeInsights";
+import SpendPace from "@/components/SpendPace";
 import CampaignInsights from "@/components/CampaignInsights";
 import FocusAreas from "@/components/FocusAreas";
 import DebugPanel from "@/components/DebugPanel";
+import StaleNotice, { staleSince } from "@/components/StaleNotice";
 
 import {
   aggregateByCampaign,
@@ -39,7 +43,7 @@ import {
   getDailySeries,
 } from "@/lib/metrics";
 
-import { MetaCampaign } from "@/types/meta";
+import { DashboardData, MetaCampaign } from "@/types/meta";
 
 export default function Dashboard() {
   // Period rows (one per campaign — exact totals) drive KPIs + table;
@@ -56,6 +60,23 @@ export default function Dashboard() {
   const [activeOnly, setActiveOnly] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  // Totals (KPIs/table) arrive first; the slower daily rows (trend charts) load
+  // separately so the page is usable before they land.
+  const [dailyLoading, setDailyLoading] = useState(true);
+  const [dailyError, setDailyError] = useState<string | null>(null);
+  // Previous period of equal length, for "vs previous" deltas on the KPIs.
+  // Loads after the main totals and never blocks them; null = no comparison.
+  const [prev, setPrev] = useState<{
+    rows: MetaCampaign[];
+    range: { since: string; until: string };
+  } | null>(null);
+  // Set when Meta failed and the API served older cached data instead (per part).
+  const [staleTotals, setStaleTotals] = useState<number | null>(null);
+  const [staleDaily, setStaleDaily] = useState<number | null>(null);
+  const stale =
+    staleTotals !== null && staleDaily !== null
+      ? Math.min(staleTotals, staleDaily)
+      : (staleTotals ?? staleDaily);
 
   // Dev flags read once from the URL.
   const [showDebug] = useState(
@@ -97,6 +118,10 @@ export default function Dashboard() {
         setPeriodRows(MOCK_CAMPAIGNS);
         setDailyRows(MOCK_CAMPAIGNS);
         setError(null);
+        setStaleTotals(null);
+        setStaleDaily(null);
+        setDailyError(null);
+        setDailyLoading(false);
         setLastUpdated("mock data");
         setLoading(false);
         return;
@@ -108,6 +133,10 @@ export default function Dashboard() {
         setPeriodRows(EXPORT_CAMPAIGNS);
         setDailyRows(EXPORT_CAMPAIGNS); // period-level: no daily trend
         setError(null);
+        setStaleTotals(null);
+        setStaleDaily(null);
+        setDailyError(null);
+        setDailyLoading(false);
         setLastUpdated(null);
         setLoading(false);
         return;
@@ -117,6 +146,7 @@ export default function Dashboard() {
         setPeriodRows([]);
         setDailyRows([]);
         setError("Pick a start and end date for the custom range.");
+        setDailyLoading(false);
         setLoading(false);
         return;
       }
@@ -126,40 +156,81 @@ export default function Dashboard() {
           ? `since=${customSince}&until=${customUntil}`
           : `datePreset=${datePreset}`;
 
-      try {
-        const res = await fetch(`/api/meta?${query}`);
-        const json = await res.json();
-        if (ignore) return;
+      // Fire both parts at once (same number of Graph calls as before), but
+      // render as soon as the fast totals arrive — the slow daily rows only
+      // feed the trend charts.
+      type PartJson = Partial<DashboardData> & { error?: { message?: string } };
+      type PartResponse = { res: Response; json: PartJson } | null;
+      const request = (part: "totals" | "daily" | "prev"): Promise<PartResponse> =>
+        fetch(`/api/meta?${query}&part=${part}`)
+          .then(async (res) => ({ res, json: await res.json() }))
+          .catch((err) => {
+            console.error(err);
+            return null;
+          });
 
-        if (Array.isArray(json?.campaigns) && Array.isArray(json?.daily)) {
-          setPeriodRows(json.campaigns);
-          setDailyRows(json.daily);
-          setError(null);
-          setLastUpdated(
-            new Date().toLocaleTimeString("en-IN", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          );
-        } else {
-          setPeriodRows([]);
-          setDailyRows([]);
-          setError(
-            json?.error?.message ??
-              "The Meta API returned an unexpected response."
-          );
-        }
-      } catch (err) {
-        if (ignore) return;
-        console.error(err);
+      setDailyLoading(true);
+      setDailyError(null);
+      setPrev(null);
+      const totalsReq = request("totals");
+      const dailyReq = request("daily");
+
+      const totals = await totalsReq;
+      if (ignore) return;
+
+      if (totals && Array.isArray(totals.json?.campaigns)) {
+        setPeriodRows(totals.json.campaigns);
+        setError(null);
+        setStaleTotals(staleSince(totals.res));
+        setLastUpdated(
+          new Date().toLocaleTimeString("en-IN", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        );
+      } else {
         setPeriodRows([]);
         setDailyRows([]);
+        setStaleTotals(null);
+        setStaleDaily(null);
+        setDailyLoading(false);
         setError(
-          "Could not reach the dashboard API. Check your connection and try again."
+          totals
+            ? (totals.json?.error?.message ??
+                "The Meta API returned an unexpected response.")
+            : "Could not reach the dashboard API. Check your connection and try again."
         );
-      } finally {
-        if (!ignore) setLoading(false);
+        setLoading(false);
+        return;
       }
+      setLoading(false);
+
+      // Previous-period comparison: fired once the KPIs are up, fails silently
+      // (the deltas simply don't show).
+      request("prev").then((p) => {
+        if (ignore) return;
+        if (p && Array.isArray(p.json?.previous) && p.json.previousRange) {
+          setPrev({ rows: p.json.previous, range: p.json.previousRange });
+        }
+      });
+
+      const daily = await dailyReq;
+      if (ignore) return;
+
+      if (daily && Array.isArray(daily.json?.daily)) {
+        setDailyRows(daily.json.daily);
+        setStaleDaily(staleSince(daily.res));
+      } else {
+        setDailyRows([]);
+        setStaleDaily(null);
+        setDailyError(
+          daily
+            ? (daily.json?.error?.message ??
+                "The Meta API returned an unexpected response.")
+            : "Could not reach the dashboard API."
+        );
+      }
+      setDailyLoading(false);
     }
 
     load();
@@ -182,6 +253,28 @@ export default function Dashboard() {
   // Funnel is account-wide for the exact selected range — built from the same
   // exact-match period rows as the KPIs, not the daily rows.
   const funnelStages = useMemo(() => computeFunnel(periodRows), [periodRows]);
+
+  // "vs previous" deltas (undefined until the comparison period arrives).
+  const prevTotals = useMemo(
+    () => (prev ? computeTotals(prev.rows) : null),
+    [prev]
+  );
+  const prevLabel = useMemo(() => {
+    if (!prev) return "";
+    const days =
+      Math.round(
+        (Date.parse(prev.range.until) - Date.parse(prev.range.since)) / 86_400_000
+      ) + 1;
+    return days === 1 ? "vs prev day" : `vs prev ${days}d`;
+  }, [prev]);
+  const delta = (
+    current: number,
+    previous: number | undefined,
+    good: KpiDelta["good"]
+  ): KpiDelta | undefined =>
+    prevTotals
+      ? { pct: pctChange(current, previous), good, label: prevLabel }
+      : undefined;
 
   // Campaigns with real spend in this range — badge count and the basis for
   // the "Active" toggle. Feeds the table + insights + focus areas + campaign
@@ -238,12 +331,15 @@ export default function Dashboard() {
             <EmptyState onRetry={refresh} />
           ) : (
             <div className="mx-auto max-w-[1400px] space-y-10">
+              <StaleNotice since={stale} onRetry={refresh} />
+
               {/* KPI grid */}
               <section id="overview" className="animate-in scroll-mt-24">
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   <KPICard
                     title="Spend"
                     value={formatCurrency(totals.spend)}
+                    delta={delta(totals.spend, prevTotals?.spend, "neutral")}
                     hint={`${formatCurrency(totals.cpm)} CPM`}
                     accent="var(--series-1)"
                     icon={<IndianRupee size={18} />}
@@ -251,12 +347,14 @@ export default function Dashboard() {
                   <KPICard
                     title="Revenue"
                     value={formatCurrency(totals.revenue)}
+                    delta={delta(totals.revenue, prevTotals?.revenue, "up")}
                     accent="var(--positive)"
                     icon={<TrendingUp size={18} />}
                   />
                   <KPICard
                     title="ROAS"
                     value={formatRoas(totals.roas)}
+                    delta={delta(totals.roas, prevTotals?.roas, "up")}
                     hint={`${formatCurrency(totals.revenue, 0)} on ${formatCurrency(
                       totals.spend,
                       0
@@ -268,6 +366,7 @@ export default function Dashboard() {
                   <KPICard
                     title="Purchases"
                     value={formatNumber(totals.purchases)}
+                    delta={delta(totals.purchases, prevTotals?.purchases, "up")}
                     hint={`${formatCurrency(totals.costPerPurchase)} per purchase`}
                     accent="var(--series-3)"
                     icon={<ShoppingCart size={18} />}
@@ -275,18 +374,21 @@ export default function Dashboard() {
                   <KPICard
                     title="Impressions"
                     value={formatNumber(totals.impressions)}
+                    delta={delta(totals.impressions, prevTotals?.impressions, "neutral")}
                     accent="var(--series-4)"
                     icon={<Eye size={18} />}
                   />
                   <KPICard
                     title="Clicks"
                     value={formatNumber(totals.clicks)}
+                    delta={delta(totals.clicks, prevTotals?.clicks, "neutral")}
                     accent="var(--series-6)"
                     icon={<MousePointerClick size={18} />}
                   />
                   <KPICard
                     title="Avg CTR"
                     value={formatPercent(totals.ctr)}
+                    delta={delta(totals.ctr, prevTotals?.ctr, "up")}
                     hint={`${formatCurrency(totals.cpc)} CPC`}
                     accent="var(--series-2)"
                     icon={<Target size={18} />}
@@ -300,9 +402,25 @@ export default function Dashboard() {
                 </div>
               </section>
 
+              {/* Today vs yesterday spend pace — always "today", independent of
+                  the header's date range. Needs the live API. */}
+              {!useMock && !useExport && (
+                <section id="pace" className="scroll-mt-24">
+                  <SpendPace refreshKey={reloadKey} />
+                </section>
+              )}
+
               {/* Trend charts — hidden when the source has no daily granularity */}
               <section id="performance" className="scroll-mt-24 space-y-4">
-                {chartData.length >= 2 ? (
+                {dailyLoading ? (
+                  <>
+                    <ChartSkeleton className="h-[340px]" />
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      <ChartSkeleton className="h-[300px]" />
+                      <SpendDistribution campaigns={visibleCampaigns} />
+                    </div>
+                  </>
+                ) : chartData.length >= 2 ? (
                   <>
                     <SpendChart data={chartData} />
                     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -314,8 +432,9 @@ export default function Dashboard() {
                   <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                     <SpendDistribution campaigns={visibleCampaigns} />
                     <div className="flex items-center justify-center rounded-[var(--radius-card)] border border-dashed border-hairline bg-surface p-8 text-center text-sm text-ink-muted">
-                      Daily trend charts require the live Meta API (this view uses
-                      period-level export data).
+                      {dailyError
+                        ? `Couldn’t load the daily trend: ${dailyError} Use Refresh to try again.`
+                        : "Daily trend charts require the live Meta API (this view uses period-level export data)."}
                     </div>
                   </div>
                 )}
@@ -324,6 +443,29 @@ export default function Dashboard() {
                   <RevenueDistribution campaigns={visibleCampaigns} />
                 </div>
               </section>
+
+              {/* Weekly media-type breakdown — fetches its own window
+                  (N weeks ending at an anchor date), independent of the
+                  header's date preset. Needs the live API: skipped for
+                  mock/export sources. */}
+              {!useMock && !useExport && (
+                <section id="weekly" className="scroll-mt-24">
+                  <WeeklyPerformance />
+                </section>
+              )}
+
+              {/* Ad-level performance (live ads, verdict per ad) — follows the
+                  header's date range; loads when scrolled near. Needs the live
+                  API: skipped for mock/export sources. */}
+              {!useMock && !useExport && (
+                <section id="creatives" className="scroll-mt-24">
+                  <CreativeInsights
+                    datePreset={datePreset}
+                    customSince={customSince}
+                    customUntil={customUntil}
+                  />
+                </section>
+              )}
 
               {/* Executive insights */}
               <section id="insights" className="scroll-mt-24 space-y-8">
@@ -347,6 +489,14 @@ export default function Dashboard() {
 }
 
 /* ─── States ─────────────────────────────────────────────────── */
+
+function ChartSkeleton({ className }: { className: string }) {
+  return (
+    <div
+      className={`animate-pulse rounded-[var(--radius-card)] border border-hairline bg-surface ${className}`}
+    />
+  );
+}
 
 function KpiSkeleton() {
   return (
