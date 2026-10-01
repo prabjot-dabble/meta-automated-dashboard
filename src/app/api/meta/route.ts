@@ -1,10 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DashboardData, MetaCampaign, MetaInsightsPage } from "@/types/meta";
+import { DashboardData, MetaCampaign } from "@/types/meta";
+import { TRACKED_ACTION_TYPES } from "@/lib/metrics";
+import { DiskCache } from "@/lib/diskCache";
+import {
+    GRAPH_VERSION,
+    MetaRequestError,
+    buildDateQuery,
+    resolveRange,
+    cacheTtlMs,
+    previousRange,
+    fetchAllPages,
+    trimActionTypes,
+    toLocalYMD,
+} from "@/lib/metaGraph";
 
 // Live marketing data — never cache this route.
 export const dynamic = "force-dynamic";
-
-const GRAPH_VERSION = "v25.0";
 
 const INSIGHT_FIELDS = [
     "campaign_name",
@@ -21,122 +32,65 @@ const INSIGHT_FIELDS = [
     "actions",
     "action_values",
     "purchase_roas",
-    "cost_per_action_type",
 ].join(",");
 
-/**
- * Formats a Date as a local `YYYY-MM-DD` string.
- *
- * We deliberately avoid `toISOString()` here: it converts to UTC, which for
- * IST (UTC+5:30) rolls local midnight back to the previous calendar day and
- * produced off-by-one month boundaries for `this_month` / `last_month`.
- */
-function toLocalYMD(date: Date): string {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-}
+// The trend chart only needs date, spend, purchases and revenue. A lean field
+// list keeps the campaign×day query (the heaviest one) small and less likely to
+// trip Meta's transient "service unavailable" errors.
+const DAILY_FIELDS = [
+    "campaign_name",
+    "campaign_id",
+    "date_start",
+    "date_stop",
+    "spend",
+    "actions",
+    "action_values",
+].join(",");
 
-/**
- * Meta transient error codes worth retrying. `code 1` / `error_subcode 99`
- * ("An unknown error occurred") and `code 2` are intermittent server-side
- * failures that Graph itself recommends retrying — they hit the default
- * `last_30d` view often enough to matter.
- */
-function isTransientMetaError(error: { code?: number } | undefined): boolean {
-    return error?.code === 1 || error?.code === 2;
-}
+// Meta's time_increment=1 cost grows ~linearly with days (~1.2s/day measured),
+// so a 30-day query outlives the request timeout. Weekly chunks run in parallel
+// (capped, to stay gentle on rate limits) each finish well inside it.
+const DAILY_CHUNK_DAYS = 7;
+const DAILY_CONCURRENCY = 4;
 
-const MAX_ATTEMPTS = 3;
-const RETRY_BASE_MS = 400;
+async function fetchDailyChunked(
+    accountId: string,
+    token: string,
+    dateQuery: string,
+    range: { since: Date; until: Date } | null
+): Promise<MetaCampaign[]> {
+    if (!range) return fetchInsights(accountId, token, dateQuery, true);
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * Fetches and parses one Graph page, retrying transient failures (network
- * errors, non-JSON, transient Meta error codes) with linear backoff. Returns
- * the parsed page, or throws with a caller-friendly message on final failure.
- */
-async function fetchPageWithRetry(pageUrl: string): Promise<MetaInsightsPage> {
-    let lastError = "Meta API request failed.";
-
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-            const response = await fetch(pageUrl, { cache: "no-store" });
-            const json = (await response.json()) as MetaInsightsPage;
-
-            if (json.error) {
-                if (isTransientMetaError(json.error) && attempt < MAX_ATTEMPTS) {
-                    lastError = json.error.message;
-                    await sleep(RETRY_BASE_MS * attempt);
-                    continue;
-                }
-                // Non-transient (or out of attempts): surface Meta's error.
-                throw new MetaRequestError(json.error.message, json.error);
-            }
-
-            return json;
-        } catch (err) {
-            if (err instanceof MetaRequestError) throw err;
-            // Network / non-JSON failure — retry if attempts remain.
-            lastError =
-                err instanceof Error ? err.message : "Unknown network error.";
-            if (attempt < MAX_ATTEMPTS) {
-                await sleep(RETRY_BASE_MS * attempt);
-                continue;
-            }
-        }
-    }
-
-    throw new MetaRequestError(lastError);
-}
-
-/** Carries a Meta error body so the handler can return it verbatim. */
-class MetaRequestError extends Error {
-    constructor(
-        message: string,
-        public readonly metaError?: MetaInsightsPage["error"]
+    const chunks: string[] = [];
+    for (
+        let start = new Date(range.since);
+        start <= range.until;
+        start = new Date(start.getFullYear(), start.getMonth(), start.getDate() + DAILY_CHUNK_DAYS)
     ) {
-        super(message);
-        this.name = "MetaRequestError";
+        const end = new Date(
+            start.getFullYear(),
+            start.getMonth(),
+            start.getDate() + DAILY_CHUNK_DAYS - 1
+        );
+        const last = end > range.until ? range.until : end;
+        chunks.push(
+            `time_range={"since":"${toLocalYMD(start)}","until":"${toLocalYMD(last)}"}`
+        );
     }
-}
+    if (chunks.length <= 1) return fetchInsights(accountId, token, dateQuery, true);
 
-const YMD = /^\d{4}-\d{2}-\d{2}$/;
-
-/**
- * Builds the date portion of the Graph query.
- *
- * Precedence: an explicit custom range (`since`/`until`, both YYYY-MM-DD) wins;
- * otherwise `this_month`/`last_month` are expanded to a local time_range (to
- * dodge the UTC boundary bug); every other preset passes through as
- * `date_preset`.
- */
-function buildDateQuery(
-    datePreset: string,
-    since: string | null,
-    until: string | null
-): string {
-    if (since && until && YMD.test(since) && YMD.test(until)) {
-        return `time_range={"since":"${since}","until":"${until}"}`;
-    }
-
-    const today = new Date();
-
-    if (datePreset === "this_month") {
-        const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
-        const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-        return `time_range={"since":"${toLocalYMD(firstDay)}","until":"${toLocalYMD(lastDay)}"}`;
-    }
-
-    if (datePreset === "last_month") {
-        const firstDay = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-        const lastDay = new Date(today.getFullYear(), today.getMonth(), 0);
-        return `time_range={"since":"${toLocalYMD(firstDay)}","until":"${toLocalYMD(lastDay)}"}`;
-    }
-
-    return `date_preset=${encodeURIComponent(datePreset)}`;
+    const results: MetaCampaign[][] = new Array(chunks.length);
+    let next = 0;
+    const worker = async () => {
+        while (next < chunks.length) {
+            const i = next++;
+            results[i] = await fetchInsights(accountId, token, chunks[i], true);
+        }
+    };
+    await Promise.all(
+        Array.from({ length: Math.min(DAILY_CONCURRENCY, chunks.length) }, worker)
+    );
+    return results.flat();
 }
 
 /**
@@ -155,10 +109,9 @@ async function fetchInsights(
     dateQuery: string,
     daily: boolean
 ): Promise<MetaCampaign[]> {
-    const rows: MetaCampaign[] = [];
-    let nextUrl: string | null =
+    const url =
         `https://graph.facebook.com/${GRAPH_VERSION}/${accountId}/insights` +
-        `?fields=${INSIGHT_FIELDS}` +
+        `?fields=${daily ? DAILY_FIELDS : INSIGHT_FIELDS}` +
         `&level=campaign` +
         (daily ? `&time_increment=1` : ``) +
         `&use_unified_attribution_setting=true` +
@@ -166,25 +119,35 @@ async function fetchInsights(
         `&${dateQuery}` +
         `&access_token=${token}`;
 
-    while (nextUrl) {
-        const json = await fetchPageWithRetry(nextUrl);
-        if (Array.isArray(json.data)) rows.push(...json.data);
-        nextUrl = json.paging?.next ?? null;
-    }
-
-    return rows;
+    return trimActionTypes(
+        await fetchAllPages<MetaCampaign>(url),
+        TRACKED_ACTION_TYPES
+    );
 }
 
 /**
- * In-memory response cache. Meta ad data for a given range changes slowly, and
- * repeated dashboard loads/refreshes must NOT each hit the Graph API — bursts
- * trip Meta's abuse protection. With this cache, Meta is called at most once
- * per range per TTL window, no matter how often the UI reloads.
+ * In-memory response cache, kept per part ("totals" / "daily") so the UI can
+ * load the fast totals first and the slow daily rows separately. Meta ad data
+ * for a given range changes slowly, and repeated dashboard loads/refreshes must
+ * NOT each hit the Graph API — bursts trip Meta's abuse protection.
  *
- * Process-local (fine for a single-instance dashboard). `?fresh=1` bypasses it.
+ * Lifetime depends on how settled the range is (see `cacheTtlMs`): 5 min when
+ * it includes today, 30 min for the last week, 24 h for older ranges.
+ *
+ * Also saved to disk (see `DiskCache`), so restarts keep it. `?fresh=1` bypasses it.
  */
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const cache = new Map<string, { at: number; payload: DashboardData }>();
+type Part = "totals" | "daily" | "prev";
+const cache = new DiskCache<{
+    at: number;
+    ttl: number;
+    rows: MetaCampaign[];
+}>("meta-campaigns");
+
+type PartResult = {
+    rows: MetaCampaign[];
+    status: "hit" | "miss" | "stale";
+    at: number;
+};
 
 export async function GET(request: NextRequest) {
     const token = process.env.META_ACCESS_TOKEN;
@@ -210,25 +173,100 @@ export async function GET(request: NextRequest) {
         params.get("since"),
         params.get("until")
     );
-
-    // Serve from cache unless it is stale or a fresh pull is explicitly asked.
-    const cacheKey = dateQuery;
-    const cached = cache.get(cacheKey);
+    const range = resolveRange(datePreset, params.get("since"), params.get("until"));
     const bypass = params.get("fresh") === "1";
-    if (!bypass && cached && Date.now() - cached.at < CACHE_TTL_MS) {
-        return NextResponse.json(cached.payload, {
-            headers: { "x-cache": "hit" },
-        });
+
+    // `?part=totals|daily` fetches one half; no `part` returns both (legacy).
+    const partParam = params.get("part");
+    const parts: Part[] =
+        partParam === "totals"
+            ? ["totals"]
+            : partParam === "daily"
+              ? ["daily"]
+              : partParam === "prev"
+                ? ["prev"]
+                : ["totals", "daily"];
+
+    // Previous period of the same length, for "vs previous" deltas. Null when a
+    // comparison isn't meaningful (see previousRange).
+    const prev = range ? previousRange(range) : null;
+
+    /** Cache lookup → Graph fetch → stale fallback, for one part. */
+    async function loadPart(part: Part): Promise<PartResult> {
+        if (part === "prev" && !prev) {
+            return { rows: [], status: "hit", at: Date.now() };
+        }
+        const cacheKey = `${dateQuery}|${part}`;
+        const cached = cache.get(cacheKey);
+        if (!bypass && cached && Date.now() - cached.at < cached.ttl) {
+            return { rows: cached.rows, status: "hit", at: cached.at };
+        }
+
+        try {
+            const t0 = Date.now();
+            const rows =
+                part === "totals"
+                    ? await fetchInsights(accountId!, token!, dateQuery, false)
+                    : part === "prev"
+                      ? await fetchInsights(
+                            accountId!,
+                            token!,
+                            `time_range={"since":"${toLocalYMD(prev!.since)}","until":"${toLocalYMD(prev!.until)}"}`,
+                            false
+                        )
+                      : await fetchDailyChunked(accountId!, token!, dateQuery, range);
+            console.log(
+                `[meta] campaign ${part}: ${rows.length} rows in ${Date.now() - t0}ms`
+            );
+            // Unknown range → shortest TTL (treat as "includes today"). The
+            // previous period ended before the selected one began, so it settles
+            // on its own (older) schedule.
+            const ttlEnd = part === "prev" ? prev?.until : range?.until;
+            const ttl = ttlEnd ? cacheTtlMs(ttlEnd) : 5 * 60 * 1000;
+            const at = Date.now();
+            cache.set(cacheKey, { at, ttl, rows });
+            return { rows, status: "miss", at };
+        } catch (err) {
+            // Serve the last good data (however old) rather than an error page.
+            if (cached) {
+                console.error(
+                    `Meta ${part} request failed, serving stale:`,
+                    err instanceof Error ? err.message : err
+                );
+                return { rows: cached.rows, status: "stale", at: cached.at };
+            }
+            throw err;
+        }
     }
 
     try {
-        // Period rows (exact totals) and daily rows (chart). Sequential to stay
-        // gentle on rate limits.
-        const campaigns = await fetchInsights(accountId, token, dateQuery, false);
-        const daily = await fetchInsights(accountId, token, dateQuery, true);
-        const payload: DashboardData = { campaigns, daily };
-        cache.set(cacheKey, { at: Date.now(), payload });
-        return NextResponse.json(payload, { headers: { "x-cache": "miss" } });
+        // Independent parts run in parallel.
+        const results = await Promise.all(parts.map(loadPart));
+        const byPart = Object.fromEntries(
+            parts.map((p, i) => [p, results[i]])
+        ) as Partial<Record<Part, PartResult>>;
+
+        const payload: Partial<DashboardData> = {};
+        if (byPart.totals) payload.campaigns = byPart.totals.rows;
+        if (byPart.daily) payload.daily = byPart.daily.rows;
+        if (byPart.prev) {
+            payload.previous = prev ? byPart.prev.rows : null;
+            payload.previousRange = prev
+                ? { since: toLocalYMD(prev.since), until: toLocalYMD(prev.until) }
+                : null;
+        }
+
+        const stale = results.filter((r) => r.status === "stale");
+        const headers: Record<string, string> = {};
+        if (stale.length > 0) {
+            headers["x-cache"] = "stale";
+            headers["x-cache-at"] = String(Math.min(...stale.map((r) => r.at)));
+        } else {
+            headers["x-cache"] = results.every((r) => r.status === "hit")
+                ? "hit"
+                : "miss";
+        }
+        return NextResponse.json(payload, { headers });
     } catch (err) {
         const metaError =
             err instanceof MetaRequestError ? err.metaError : undefined;
