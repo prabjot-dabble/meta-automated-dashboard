@@ -18,9 +18,17 @@ import {
     ChevronUp,
     ExternalLink,
     Eye,
+    Search,
+    X,
 } from "lucide-react";
 
 import StaleNotice, { staleSince } from "@/components/StaleNotice";
+import {
+    Searchable,
+    matchesSearch,
+    parseSearchQuery,
+    toSearchable,
+} from "@/lib/adSearch";
 import {
     FATIGUE_FREQUENCY,
     FUNNEL_LEAK_FRACTION,
@@ -78,6 +86,8 @@ interface AdRowView {
     aov: number;
     roas: number;
     verdict: Verdict;
+    /** Normalised ad + campaign name for the search box (built once per row). */
+    searchable: Searchable;
     /** Winning, modestly funded, not tired: the obvious ad to give more budget. */
     scale: boolean;
     funnel: FunnelStage[];
@@ -182,6 +192,7 @@ export default function CreativeInsights({
     const [stale, setStale] = useState<number | null>(null);
     const [reloadKey, setReloadKey] = useState(0);
 
+    const [search, setSearch] = useState("");
     const [verdictFilter, setVerdictFilter] = useState<Verdict | null>(null);
     const [fatigueOnly, setFatigueOnly] = useState(false);
     const [weakHookOnly, setWeakHookOnly] = useState(false);
@@ -304,6 +315,7 @@ export default function CreativeInsights({
                     benchmark,
                     scaleCutoff
                 ),
+                searchable: toSearchable(r.ad.ad_name, r.ad.campaign_name),
                 funnel: computeFunnel([r.ad]),
                 video: r.ad.format === "video",
                 videoJudgeable:
@@ -369,10 +381,17 @@ export default function CreativeInsights({
         [rows, videoBench]
     );
 
+    const searchTokens = useMemo(() => parseSearchQuery(search), [search]);
+
     const visible = useMemo(() => {
         let filtered = verdictFilter
             ? rows.filter((r) => r.verdict === verdictFilter)
             : rows;
+        if (searchTokens.length > 0) {
+            filtered = filtered.filter((r) =>
+                matchesSearch(r.searchable, searchTokens)
+            );
+        }
         if (fatigueOnly) {
             filtered = filtered.filter(
                 (r) => r.spend > 0 && r.frequency >= FATIGUE_FREQUENCY
@@ -393,7 +412,16 @@ export default function CreativeInsights({
             }
             return dir * (a[sort.key] - b[sort.key]);
         });
-    }, [rows, verdictFilter, fatigueOnly, weakHookOnly, scaleOnly, videoBench, sort]);
+    }, [
+        rows,
+        verdictFilter,
+        searchTokens,
+        fatigueOnly,
+        weakHookOnly,
+        scaleOnly,
+        videoBench,
+        sort,
+    ]);
 
     function toggleSort(key: SortKey) {
         setSort((s) =>
@@ -474,6 +502,44 @@ export default function CreativeInsights({
                         ))}
                     </div>
                 </div>
+
+                {/* Search: forgiving about underscores, spaces, dots and case */}
+                {!loading && !error && !customIncomplete && rows.length > 0 && (
+                    <div className="border-b border-hairline px-5 py-3">
+                        <label className="relative block">
+                            <span className="sr-only">Search ads</span>
+                            <Search
+                                size={15}
+                                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
+                            />
+                            <input
+                                type="text"
+                                value={search}
+                                onChange={(e) => {
+                                    setSearch(e.target.value);
+                                    setShown(PAGE_SIZE);
+                                }}
+                                placeholder="Search ads or campaigns, e.g. finger paint, price drop, navratri"
+                                autoComplete="off"
+                                spellCheck={false}
+                                className="w-full rounded-[10px] border border-hairline bg-surface-2 py-2 pl-9 pr-9 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-hairline-strong"
+                            />
+                            {search && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSearch("");
+                                        setShown(PAGE_SIZE);
+                                    }}
+                                    aria-label="Clear search"
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-ink-muted transition-colors hover:text-ink"
+                                >
+                                    <X size={14} />
+                                </button>
+                            )}
+                        </label>
+                    </div>
+                )}
 
                 {/* Verdict summary — click a chip to filter */}
                 {!loading && !error && rows.length > 0 && (
@@ -606,11 +672,51 @@ export default function CreativeInsights({
                         </button>
                     </div>
                 ) : visible.length === 0 ? (
-                    <p className="p-8 text-center text-sm text-ink-muted">
-                        {liveOnly
-                            ? "No live ads found."
-                            : "No ads with delivery in this range."}
-                    </p>
+                    searchTokens.length > 0 ? (
+                        <div className="flex flex-col items-center gap-3 p-8 text-center">
+                            <p className="text-sm text-ink-secondary">
+                                No {liveOnly ? "live " : ""}ads match &ldquo;
+                                {search.trim()}&rdquo;
+                                {(verdictFilter ||
+                                    fatigueOnly ||
+                                    weakHookOnly ||
+                                    scaleOnly) &&
+                                    " with the filters you have on"}
+                                .
+                            </p>
+                            <div className="flex flex-wrap justify-center gap-2">
+                                {liveOnly && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setLiveOnly(false);
+                                            setExpandedId(null);
+                                            setShown(PAGE_SIZE);
+                                        }}
+                                        className="rounded-[10px] border border-hairline px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-hairline-strong"
+                                    >
+                                        Search all ads instead
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSearch("");
+                                        setShown(PAGE_SIZE);
+                                    }}
+                                    className="rounded-[10px] border border-hairline px-4 py-2 text-sm font-medium text-ink transition-colors hover:border-hairline-strong"
+                                >
+                                    Clear search
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <p className="p-8 text-center text-sm text-ink-muted">
+                            {liveOnly
+                                ? "No live ads found."
+                                : "No ads with delivery in this range."}
+                        </p>
+                    )
                 ) : (
                     <>
                         <div className="overflow-x-auto">
