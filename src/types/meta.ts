@@ -150,3 +150,32 @@ export interface MetaApiError {
     error_subcode?: number;
     fbtrace_id?: string;
 }
+
+/**
+ * One ad that went live (or was launched) today, from `/api/meta/launches`.
+ * Times are ISO strings; the UI formats them in the account's time zone.
+ */
+export interface LaunchedAd {
+    ad_id: string;
+    ad_name: string;
+    campaign_name: string;
+    adset_name: string;
+    /** Meta `effective_status` right now, e.g. ACTIVE, PENDING_REVIEW, DISAPPROVED. */
+    status: string;
+    /** "new" = created or first delivered today; "reactivated" = an older ad switched back on today. */
+    kind: "new" | "reactivated";
+    createdAt: string;
+    /** First switch to Active today (after review, or turned on). Null if not live yet. */
+    liveAt: string | null;
+    /** First impression served, if it happened today. */
+    firstDeliveryAt: string | null;
+    previewUrl?: string;
+    adsManagerUrl: string;
+}
+
+/** Shape returned by `/api/meta/launches`. */
+export interface LaunchesData {
+    timezone: string;
+    today: string;
+    ads: LaunchedAd[];
+}

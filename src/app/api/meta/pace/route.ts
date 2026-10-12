@@ -10,7 +10,8 @@ import {
     GRAPH_VERSION,
     MetaRequestError,
     fetchAllPages,
-    fetchPageWithRetry,
+    getAccountTimeZone,
+    nowIn,
     trimActionTypes,
 } from "@/lib/metaGraph";
 
@@ -30,52 +31,6 @@ type HourRow = MetaCampaign & { [HOUR_KEY]: string };
 // Today moves all day, but the data is small; a short cache keeps refreshes cheap.
 const CACHE_TTL_MS = 2 * 60 * 1000;
 const cache = new Map<string, { at: number; payload: PaceData }>();
-
-/** The account's time zone never changes, so look it up once per process. */
-let accountTz: string | null = null;
-
-async function getAccountTimeZone(
-    base: string,
-    token: string
-): Promise<string> {
-    if (accountTz) return accountTz;
-    try {
-        const json = (await fetchPageWithRetry(
-            `${base}?fields=timezone_name&access_token=${token}`
-        )) as unknown as { timezone_name?: string };
-        if (json.timezone_name) {
-            accountTz = json.timezone_name;
-            return accountTz;
-        }
-    } catch {
-        // fall through to the server's own zone
-    }
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
-}
-
-/** Current date / hour / minute as seen in `timeZone`. */
-function nowIn(timeZone: string) {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-        timeZone,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-    }).formatToParts(new Date());
-    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
-    const y = get("year");
-    const m = get("month");
-    const d = get("day");
-    const ymd = (date: Date) => date.toISOString().slice(0, 10);
-    return {
-        today: ymd(new Date(Date.UTC(y, m - 1, d))),
-        yesterday: ymd(new Date(Date.UTC(y, m - 1, d - 1))),
-        hour: get("hour"),
-        minute: get("minute"),
-    };
-}
 
 export async function GET(request: NextRequest) {
     const token = process.env.META_ACCESS_TOKEN;
