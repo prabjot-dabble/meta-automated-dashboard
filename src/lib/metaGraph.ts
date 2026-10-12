@@ -24,6 +24,54 @@ export function toLocalYMD(date: Date): string {
     return `${year}-${month}-${day}`;
 }
 
+/* ── Account time zone ─────────────────────────────────────────────────── */
+
+/** The account's time zone never changes, so look it up once per process. */
+let accountTz: string | null = null;
+
+export async function getAccountTimeZone(
+    base: string,
+    token: string
+): Promise<string> {
+    if (accountTz) return accountTz;
+    try {
+        const json = (await fetchPageWithRetry(
+            `${base}?fields=timezone_name&access_token=${token}`
+        )) as unknown as { timezone_name?: string };
+        if (json.timezone_name) {
+            accountTz = json.timezone_name;
+            return accountTz;
+        }
+    } catch {
+        // fall through to the server's own zone
+    }
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/** Current date / hour / minute as seen in `timeZone`. */
+export function nowIn(timeZone: string) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+    }).formatToParts(new Date());
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    const y = get("year");
+    const m = get("month");
+    const d = get("day");
+    const ymd = (date: Date) => date.toISOString().slice(0, 10);
+    return {
+        today: ymd(new Date(Date.UTC(y, m - 1, d))),
+        yesterday: ymd(new Date(Date.UTC(y, m - 1, d - 1))),
+        hour: get("hour"),
+        minute: get("minute"),
+    };
+}
+
 /* ── Date-range resolution (shared by every route) ─────────────────────── */
 
 export const YMD = /^\d{4}-\d{2}-\d{2}$/;

@@ -5,12 +5,14 @@ import {
     Images,
     LayoutDashboard,
     LineChart,
+    Rocket,
     Table2,
     Sparkles,
 } from "lucide-react";
 
 const NAV = [
     { label: "Overview", href: "#overview", icon: LayoutDashboard },
+    { label: "Launched today", href: "#launches", icon: Rocket },
     { label: "Performance", href: "#performance", icon: LineChart },
     { label: "Weekly", href: "#weekly", icon: CalendarRange },
     { label: "Creatives", href: "#creatives", icon: Images },

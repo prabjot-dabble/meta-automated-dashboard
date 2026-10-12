@@ -26,6 +26,7 @@ import CampaignTable from "@/components/CampaignTable";
 import WeeklyPerformance from "@/components/WeeklyPerformance";
 import CreativeInsights from "@/components/CreativeInsights";
 import SpendPace from "@/components/SpendPace";
+import TodayLaunches from "@/components/TodayLaunches";
 import CampaignInsights from "@/components/CampaignInsights";
 import FocusAreas from "@/components/FocusAreas";
 import DebugPanel from "@/components/DebugPanel";
@@ -407,6 +408,13 @@ export default function Dashboard() {
               {!useMock && !useExport && (
                 <section id="pace" className="scroll-mt-24">
                   <SpendPace refreshKey={reloadKey} />
+                </section>
+              )}
+
+              {/* Ads that went live today — also always "today". Needs the live API. */}
+              {!useMock && !useExport && (
+                <section id="launches" className="scroll-mt-24">
+                  <TodayLaunches refreshKey={reloadKey} />
                 </section>
               )}
 
