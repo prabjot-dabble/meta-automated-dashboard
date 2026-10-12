@@ -1,6 +1,8 @@
 "use client";
 
 import {
+    CalendarRange,
+    Images,
     LayoutDashboard,
     LineChart,
     Table2,
@@ -10,6 +12,8 @@ import {
 const NAV = [
     { label: "Overview", href: "#overview", icon: LayoutDashboard },
     { label: "Performance", href: "#performance", icon: LineChart },
+    { label: "Weekly", href: "#weekly", icon: CalendarRange },
+    { label: "Creatives", href: "#creatives", icon: Images },
     { label: "Insights", href: "#insights", icon: Sparkles },
     { label: "Campaigns", href: "#campaigns", icon: Table2 },
 ] as const;

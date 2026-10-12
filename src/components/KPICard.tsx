@@ -1,4 +1,22 @@
 import { ReactNode } from "react";
+import { ArrowDownRight, ArrowUpRight } from "lucide-react";
+
+/** Change vs the previous period. `pct` is null when there's nothing to compare. */
+export type KpiDelta = {
+    pct: number | null;
+    /** Which direction is good news: "up" (revenue), "down" (cost), or neutral. */
+    good: "up" | "down" | "neutral";
+    /** Shown after the percentage, e.g. "vs prev 30d". */
+    label: string;
+};
+
+/** Percentage change from `previous` to `current`; null if previous is 0/absent. */
+export function pctChange(current: number, previous: number | undefined): number | null {
+    if (previous === undefined || !Number.isFinite(previous) || previous === 0) {
+        return null;
+    }
+    return ((current - previous) / Math.abs(previous)) * 100;
+}
 
 type Props = {
     title: string;
@@ -10,6 +28,8 @@ type Props = {
     hint?: string;
     /** Emphasize this card (e.g. the headline KPI). */
     featured?: boolean;
+    /** Change vs the previous period (omit while it loads / when unavailable). */
+    delta?: KpiDelta;
 };
 
 export default function KPICard({
@@ -19,6 +39,7 @@ export default function KPICard({
     accent = "var(--accent)",
     hint,
     featured = false,
+    delta,
 }: Props) {
     return (
         <div
@@ -59,10 +80,42 @@ export default function KPICard({
                 <h2 className="tnum text-[1.7rem] font-semibold leading-none text-ink">
                     {value}
                 </h2>
+                {delta && delta.pct !== null && (
+                    <DeltaChip delta={delta} pct={delta.pct} />
+                )}
                 {hint && (
                     <p className="mt-2 text-xs text-ink-secondary">{hint}</p>
                 )}
             </div>
         </div>
+    );
+}
+
+function DeltaChip({ delta, pct }: { delta: KpiDelta; pct: number }) {
+    const flat = Math.abs(pct) < 0.05;
+    const up = pct > 0;
+    const good =
+        delta.good === "neutral" || flat
+            ? null
+            : (delta.good === "up") === up;
+    const color =
+        good === null
+            ? "var(--ink-muted)"
+            : good
+              ? "var(--positive)"
+              : "var(--negative)";
+    const Icon = up ? ArrowUpRight : ArrowDownRight;
+
+    return (
+        <p
+            className="mt-2 flex items-center gap-1 text-xs font-medium"
+            style={{ color }}
+        >
+            {!flat && <Icon size={13} />}
+            <span className="tnum">
+                {flat ? "0.0%" : `${up ? "+" : "−"}${Math.abs(pct).toFixed(1)}%`}
+            </span>
+            <span className="font-normal text-ink-muted">{delta.label}</span>
+        </p>
     );
 }
